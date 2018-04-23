@@ -10,12 +10,15 @@ import io.ktor.http.*
 import io.ktor.response.*
 import io.ktor.routing.*
 import io.ktor.server.engine.*
+import io.ktor.server.jetty.*
 import io.ktor.server.netty.*
 import io.ktor.util.*
 import kotlinx.coroutines.experimental.*
 import org.junit.*
+import org.junit.Ignore
 import java.io.*
 import java.security.*
+import javax.crypto.*
 import javax.net.ssl.*
 import kotlin.test.*
 import kotlin.test.Test
@@ -46,7 +49,7 @@ class CIOHttpsTest : TestWithKtor() {
         @BeforeClass
         @JvmStatic
         fun setupAll() {
-            keyStore = generateCertificate(keyStoreFile)
+            keyStore = generateCertificate(keyStoreFile, algorithm = "SHA384withECDSA", keySizeInBits = 256)
             val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
             tmf.init(keyStore)
             sslContext = SSLContext.getInstance("TLS")
@@ -63,11 +66,13 @@ class CIOHttpsTest : TestWithKtor() {
                 trustManager = x509TrustManager
             }
         }).use { client ->
-            assertEquals("Hello, world", client.get("https://127.0.0.1:$serverPort/"))
+            val actual = client.get<String>("https://127.0.0.1:$serverPort/")
+            assertEquals("Hello, world", actual)
         }
     }
 
     @Test
+    @Ignore // WIP
     fun external(): Unit = runBlocking {
         val client = HttpClient(CIO)
 
