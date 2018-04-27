@@ -7,6 +7,8 @@ import io.ktor.client.request.*
 import io.ktor.client.response.*
 import io.ktor.client.tests.utils.*
 import io.ktor.http.*
+import io.ktor.network.tls.certificates.*
+import io.ktor.network.tls.extensions.*
 import io.ktor.response.*
 import io.ktor.routing.*
 import io.ktor.server.engine.*
@@ -25,7 +27,7 @@ import kotlin.test.Test
 
 class CIOHttpsTest : TestWithKtor() {
     override val server: ApplicationEngine = embeddedServer(Netty, applicationEngineEnvironment {
-        sslConnector(keyStore, "mykey", { "changeit".toCharArray() }, { "changeit".toCharArray() }) {
+        sslConnector(keyStore, "mysha384ecdsa", { "changeit".toCharArray() }, { "changeit".toCharArray() }) {
             port = serverPort
             keyStorePath = keyStoreFile.absoluteFile
 
@@ -37,7 +39,6 @@ class CIOHttpsTest : TestWithKtor() {
                 }
             }
         }
-
     })
 
     companion object {
@@ -49,7 +50,28 @@ class CIOHttpsTest : TestWithKtor() {
         @BeforeClass
         @JvmStatic
         fun setupAll() {
-            keyStore = generateCertificate(keyStoreFile, algorithm = "SHA384withECDSA", keySizeInBits = 256)
+            keyStore = buildKeyStore {
+                certificate("mysha384ecdsa") {
+                    hash = HashAlgorithm.SHA384
+                    sign = SignatureAlgorithm.ECDSA
+                    keySizeInBits = 256
+                    password = "changeit"
+                }
+                certificate("mysha256ecdsa") {
+                    hash = HashAlgorithm.SHA384
+                    sign = SignatureAlgorithm.ECDSA
+                    keySizeInBits = 128
+                    password = "changeit"
+                }
+                certificate("mykey") {
+                    hash = HashAlgorithm.SHA1
+                    sign = SignatureAlgorithm.RSA
+                    keySizeInBits = 1024
+                    password = "changeit"
+                }
+            }
+
+            keyStore.saveToFile(keyStoreFile, "changeit")
             val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
             tmf.init(keyStore)
             sslContext = SSLContext.getInstance("TLS")
@@ -72,7 +94,6 @@ class CIOHttpsTest : TestWithKtor() {
     }
 
     @Test
-    @Ignore // WIP
     fun external(): Unit = runBlocking {
         val client = HttpClient(CIO)
 

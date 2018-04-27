@@ -1,4 +1,4 @@
-package io.ktor.util
+package io.ktor.network.tls
 
 internal data class OID(val identifier: String) {
     val asArray: IntArray = identifier.split(".", " ").map { it.trim().toInt() }.toIntArray()
@@ -29,9 +29,9 @@ internal data class OID(val identifier: String) {
         val secp256r1 = OID("1.2.840.10045.3.1.7")
 
         fun fromAlgorithm(algorithm: String): OID = when (algorithm) {
-            "SHA1withRSA" -> OID.Sha1withRSAEncryption
-            "SHA384withECDSA" -> OID.ECDSAwithSHA384Encryption
-            "SHA256withECDSA" -> OID.ECDSAwithSHA256Encryption
+            "SHA1withRSA" -> Sha1withRSAEncryption
+            "SHA384withECDSA" -> ECDSAwithSHA384Encryption
+            "SHA256withECDSA" -> ECDSAwithSHA256Encryption
             else -> error("Could't find OID for $algorithm")
         }
     }

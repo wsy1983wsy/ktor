@@ -58,6 +58,7 @@ internal class TLSServerHello(
                 TLSExtensionType.SIGNATURE_ALGORITHMS -> {
                     algorithms += it.packet.parseSignatureAlgorithms()
                 }
+                else -> {}
             }
         }
 

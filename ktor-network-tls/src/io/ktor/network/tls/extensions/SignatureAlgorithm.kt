@@ -21,7 +21,6 @@ enum class HashAlgorithm(val code: Byte, val jdkName: String) {
 enum class SignatureAlgorithm(val code: Byte) {
     ANON(0),
     RSA(1),
-    DSA(2),
     ECDSA(3);
 
     companion object {
@@ -42,7 +41,8 @@ internal val SupportedSignatureAlgorithms: List<HashAndSign> = listOf(
 
     HashAndSign(HashAlgorithm.SHA512, SignatureAlgorithm.RSA),
     HashAndSign(HashAlgorithm.SHA384, SignatureAlgorithm.RSA),
-    HashAndSign(HashAlgorithm.SHA256, SignatureAlgorithm.RSA)
+    HashAndSign(HashAlgorithm.SHA256, SignatureAlgorithm.RSA),
+    HashAndSign(HashAlgorithm.SHA1, SignatureAlgorithm.RSA)
 )
 
 internal fun ByteReadPacket.parseSignatureAlgorithms(): List<HashAndSign> {

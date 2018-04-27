@@ -1,5 +1,6 @@
 package io.ktor.network.tls
 
+import io.ktor.cio.*
 import io.ktor.http.cio.internals.*
 import io.ktor.network.sockets.*
 import kotlinx.coroutines.experimental.channels.*
@@ -55,23 +56,14 @@ internal class TLSClientSession(
         }
     }
 
-    private suspend fun appDataOutputLoop(pipe: ByteReadChannel) {
-        var seq = 1L
-        val buffer = DefaultByteBufferPool.borrow()
+    private suspend fun appDataOutputLoop(pipe: ByteReadChannel) = DefaultByteBufferPool.use { buffer ->
+        while (true) {
+            buffer.clear()
+            val rc = pipe.readAvailable(buffer)
+            if (rc == -1) break
 
-        try {
-            while (true) {
-                buffer.clear()
-                val rc = pipe.readAvailable(buffer)
-                if (rc == -1) break
-
-                buffer.flip()
-                output.send(TLSRecord(TLSRecordType.ApplicationData, packet = buildPacket {
-                    writeFully(buffer)
-                }))
-            }
-        } finally {
-            DefaultByteBufferPool.recycle(buffer)
+            buffer.flip()
+            output.send(TLSRecord(TLSRecordType.ApplicationData, packet = buildPacket { writeFully(buffer) }))
         }
     }
 }

@@ -1,13 +1,12 @@
-package io.ktor.util
+package io.ktor.network.tls.certificates
 
+import io.ktor.network.tls.*
 import kotlinx.io.core.*
-import sun.security.util.*
 import java.io.*
 import java.math.*
 import java.net.*
 import java.security.*
 import java.security.cert.*
-import java.security.interfaces.*
 import java.text.*
 import java.time.*
 import java.util.*
@@ -31,8 +30,8 @@ fun generateCertificate(
     keySizeInBits: Int = 1024
 ): KeyStore {
     val daysValid: Long = 3
-    val jks = KeyStore.getInstance("JKS")!!
-    jks.load(null, null)
+    val keyStore = KeyStore.getInstance("JKS")!!
+    keyStore.load(null, null)
 
     val keyPairGenerator = KeyPairGenerator.getInstance(keysGenerationAlgorithm(algorithm))!!
     keyPairGenerator.initialize(keySizeInBits)
@@ -61,25 +60,25 @@ fun generateCertificate(
 
     cert.verify(keyPair.public)
 
-    jks.setCertificateEntry(keyAlias, cert)
-    jks.setKeyEntry(keyAlias, keyPair.private, keyPassword.toCharArray(), arrayOf(cert))
+    keyStore.setCertificateEntry(keyAlias, cert)
+    keyStore.setKeyEntry(keyAlias, keyPair.private, keyPassword.toCharArray(), arrayOf(cert))
 
     file.parentFile?.mkdirs()
     file.outputStream().use {
-        jks.store(it, jksPassword.toCharArray())
+        keyStore.store(it, jksPassword.toCharArray())
     }
-
-    return jks
+    return keyStore
 }
 
-private data class Counterparty(
+
+internal data class Counterparty(
     val country: String = "",
     val organization: String = "",
     val organizationUnit: String = "",
     val commonName: String = ""
 )
 
-private fun BytePacketBuilder.writeX509Info(
+internal fun BytePacketBuilder.writeX509Info(
     algorithm: String,
     issuer: Counterparty,
     subject: Counterparty,
@@ -179,7 +178,7 @@ private fun BytePacketBuilder.writeX509Counterparty(counterparty: Counterparty) 
     }
 }
 
-private fun BytePacketBuilder.writeCertificate(
+internal fun BytePacketBuilder.writeCertificate(
     issuer: Counterparty,
     subject: Counterparty,
     keyPair: KeyPair,

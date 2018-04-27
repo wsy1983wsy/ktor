@@ -1,11 +1,13 @@
 package io.ktor.network.tls
 
+import io.ktor.network.tls.SecretExchangeType.*
 import io.ktor.network.tls.extensions.*
 import kotlinx.coroutines.experimental.channels.*
 import kotlinx.coroutines.experimental.io.*
 import kotlinx.io.core.*
 import java.security.*
 import java.security.cert.*
+import java.security.cert.Certificate
 import java.security.interfaces.*
 import java.security.spec.*
 import javax.crypto.*
@@ -26,13 +28,8 @@ internal class TLSClientHandshake(
     val serverName: String? = null
 ) {
     private val digest = Digest()
-    private val clientSeed: ByteArray = generateSeed(randomAlgorithm)
-
-    @Volatile
-    private lateinit var serverCertificate: X509Certificate
-
-    @Volatile
-    private var certificateRequested: Boolean = false
+    private val random = SecureRandom.getInstance(randomAlgorithm)!!
+    private val clientSeed: ByteArray = random.generateClientSeed()
 
     @Volatile
     private lateinit var encryptionInfo: EncryptionInfo
@@ -86,6 +83,7 @@ internal class TLSClientHandshake(
                     useCipher = true
                     continue@loop
                 }
+                else -> {}
             }
 
             channel.send(TLSRecord(record.type, packet = packet))
@@ -146,14 +144,15 @@ internal class TLSClientHandshake(
     }
 
     private fun selectAndVerifyAlgorithm(serverHello: TLSServerHello): HashAndSign {
-        check(serverHello.cipherSuite in SupportedSuites)
+        val suite = serverHello.cipherSuite
+        check(suite in SupportedSuites)
 
         val clientExchanges = SupportedSignatureAlgorithms.filter {
-            it.hash == serverHello.cipherSuite.hash
+            it.hash == suite.hash && it.sign == suite.signatureAlgorithm
         }
 
         if (clientExchanges.isEmpty())
-            throw TLSException("No appropriate hash algorithm for suite: ${serverHello.cipherSuite}")
+            throw TLSException("No appropriate hash algorithm for suite: $suite")
 
         val serverExchanges = serverHello.hashAndSignAlgorithms
         if (serverExchanges.isEmpty()) return clientExchanges.first()
@@ -183,6 +182,9 @@ internal class TLSClientHandshake(
     }
 
     private suspend fun handleCertificatesAndKeys(signatureAlgorithm: HashAndSign) {
+        val exchangeType = serverHello.cipherSuite.exchangeType
+        var serverCertificate: Certificate? = null
+        var certificateRequested = false
         while (true) {
             val handshake = handshakes.receive()
             val packet = handshake.packet
@@ -192,8 +194,13 @@ internal class TLSClientHandshake(
                     val certs = packet.readTLSCertificate()
                     val x509s = certs.filterIsInstance<X509Certificate>()
 
+                    val authType = when (exchangeType) {
+                        RSA -> "RSA"
+                        ECDHE_ECDSA -> "EC"
+                    }
+
                     val manager: X509TrustManager = trustManager ?: findTrustManager()
-                    manager.checkServerTrusted(x509s.toTypedArray(), "EC")
+                    manager.checkServerTrusted(x509s.toTypedArray(), authType)
 
                     serverCertificate = x509s.firstOrNull { certificate ->
                         SupportedSignatureAlgorithms.any { it.name.equals(certificate.sigAlgName, ignoreCase = true) }
@@ -204,9 +211,8 @@ internal class TLSClientHandshake(
                     check(packet.remaining == 0)
                 }
                 TLSHandshakeType.ServerKeyExchange -> {
-                    val type = serverHello.cipherSuite.exchangeType
-                    when (type) {
-                        SecretExchangeType.ECDHE_ECDSA -> {
+                    when (exchangeType) {
+                        ECDHE_ECDSA -> {
                             val copy = packet.copy()
                             val curve = packet.readCurveParams()
                             val point = packet.readECPoint(curve.fieldSize)
@@ -244,11 +250,16 @@ internal class TLSClientHandshake(
 
                             encryptionInfo = generateECKeys(curve, point)
                         }
-                        else -> throw TLSException("Server key exchange support only ECDHE_ECDSA exchange for now")
+                        SecretExchangeType.RSA ->
+                            error("Server key exchange handshake doesn't expected in RCA exchange type")
                     }
                 }
                 TLSHandshakeType.ServerDone -> {
-                    handleServerDone(signatureAlgorithm)
+                    handleServerDone(
+                        signatureAlgorithm,
+                        serverCertificate!!,
+                        certificateRequested
+                    )
                     return
                 }
                 else -> throw TLSException("Unsupported message type during handshake: ${handshake.type}")
@@ -256,45 +267,49 @@ internal class TLSClientHandshake(
         }
     }
 
-    private suspend fun handleServerDone(signatureAlgorithm: HashAndSign) {
-        if (certificateRequested) {
-            sendClientCertificate()
-        }
+    private suspend fun handleServerDone(
+        signatureAlgorithm: HashAndSign,
+        serverCertificate: Certificate,
+        certificateRequested: Boolean
+    ) {
+        if (certificateRequested) sendClientCertificate()
 
-        sendClientKeyExchange(signatureAlgorithm)
+        val preSecret = generatePreSecret()
+        sendClientKeyExchange(signatureAlgorithm, serverCertificate, preSecret, certificateRequested)
+        masterSecret = masterSecret(
+            SecretKeySpec(preSecret, serverHello.cipherSuite.macName),
+            clientSeed, serverHello.serverSeed
+        )
+        preSecret.fill(0)
 
-        if (certificateRequested) {
-            sendClientCertificateVerify()
-        }
-
-        masterSecret = generateSecret()
+        if (certificateRequested) sendClientCertificateVerify()
 
         sendChangeCipherSpec()
         sendClientFinished(masterSecret)
     }
 
-    private fun generateSecret(): SecretKeySpec {
-        // generate common secret
-        val presecret = KeyAgreement.getInstance("ECDH")!!.run {
+    private fun generatePreSecret(): ByteArray = when (serverHello.cipherSuite.exchangeType) {
+        SecretExchangeType.RSA -> random.generateSeed(48)!!.also {
+            it[0] = 0x03
+            it[1] = 0x03
+        }
+        SecretExchangeType.ECDHE_ECDSA -> KeyAgreement.getInstance("ECDH")!!.run {
             init(encryptionInfo.clientPrivate)
             doPhase(encryptionInfo.serverPublic, true)
             generateSecret()!!
         }
-
-        val result = masterSecret(
-            SecretKeySpec(presecret, serverHello.cipherSuite.macName),
-            clientSeed, serverHello.serverSeed
-        )
-
-        presecret.fill(0)
-
-        return result
     }
 
-    private suspend fun sendClientKeyExchange(signatureAlgorithm: HashAndSign) {
+    private suspend fun sendClientKeyExchange(
+        signatureAlgorithm: HashAndSign,
+        serverCertificate: Certificate,
+        preSecret: ByteArray,
+        certificateRequested: Boolean
+    ) {
         val packet = when (signatureAlgorithm.sign) {
-            SignatureAlgorithm.RSA -> error("Unsupported")
-            SignatureAlgorithm.DSA -> error("Unsupported")
+            SignatureAlgorithm.RSA -> buildPacket {
+                writeEncryptedPreMasterSecret(preSecret, serverCertificate.publicKey, random)
+            }
             SignatureAlgorithm.ECDSA -> buildPacket {
                 if (certificateRequested) return@buildPacket // Key exchange has already completed implicit in the certificate message.
                 writePublicKeyUncompressed(encryptionInfo.clientPublic)
@@ -367,10 +382,8 @@ private fun findTrustManager(): X509TrustManager {
     return manager.first { it is X509TrustManager } as X509TrustManager
 }
 
-private fun generateSeed(algorithm: String): ByteArray {
-    val seed = SecureRandom.getInstance(algorithm).generateSeed(32)!!
-
-    return seed.also {
+private fun SecureRandom.generateClientSeed(): ByteArray {
+    return generateSeed(32)!!.also {
         val unixTime = (System.currentTimeMillis() / 1000L)
         it[0] = (unixTime shr 24).toByte()
         it[1] = (unixTime shr 16).toByte()
